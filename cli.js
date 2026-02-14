@@ -7,10 +7,12 @@ const BASE = process.env.COMPILER_API_URL || "http://localhost:8000";
 
 // --- http helpers ---
 
-function request(method, urlPath, { body, raw } = {}) {
+function request(method, urlPath, { body, raw, contentType } = {}) {
   const url = new URL(urlPath, BASE);
   return new Promise((resolve, reject) => {
-    const headers = body ? { "Content-Type": "text/plain" } : {};
+    const headers = {};
+    if (body && contentType) headers["Content-Type"] = contentType;
+    else if (body) headers["Content-Type"] = "text/plain";
     const req = http.request(url, { method, headers }, (res) => {
       if (raw) return resolve(res);
       const chunks = [];
@@ -117,11 +119,12 @@ const commands = {
 
     if (rows.length === 0) return console.log("No events.");
 
-    const w = { id: 4, ts: 19, lang: 15, input: 12, output: 12, size: 7, ms: 6, ok: 3 };
+    const w = { id: 4, ts: 19, type: 8, detail: 15, input: 12, output: 12, size: 7, ms: 6 };
     console.log(
       "ID".padEnd(w.id),
       "TIMESTAMP".padEnd(w.ts),
-      "LANGUAGE".padEnd(w.lang),
+      "TYPE".padEnd(w.type),
+      "DETAIL".padEnd(w.detail),
       "INPUT".padEnd(w.input),
       "OUTPUT".padEnd(w.output),
       "SIZE".padStart(w.size),
@@ -129,14 +132,16 @@ const commands = {
       "OK",
     );
     for (const e of rows) {
+      let detail = e.language || e.alias || (e.module_hash || "").slice(0, 12) || "";
       console.log(
         String(e.id).padEnd(w.id),
         e.timestamp.slice(0, 19).padEnd(w.ts),
-        e.language.padEnd(w.lang),
+        (e.type || "").padEnd(w.type),
+        detail.padEnd(w.detail),
         (e.input_hash || "").slice(0, 12).padEnd(w.input),
-        (e.output_hash || "—").slice(0, 12).padEnd(w.output),
-        String(e.output_size || "—").padStart(w.size),
-        String(e.compile_time_ms || "—").padStart(w.ms),
+        (e.output_hash || "").slice(0, 12).padEnd(w.output),
+        String(e.output_size || "").padStart(w.size),
+        String(e.duration_ms || "").padStart(w.ms),
         e.success ? "✓" : "✗" + (e.error ? ` ${e.error.split("\n")[0].slice(0, 60)}` : ""),
       );
     }
@@ -156,7 +161,7 @@ const commands = {
     const fileArg = args[0];
     if (!fileArg) die("Usage: validate <file.wasm>");
     const wasm = fs.readFileSync(path.resolve(fileArg));
-    const resp = await request("POST", "/validate", { body: wasm });
+    const resp = await request("POST", "/validate", { body: wasm, contentType: "application/wasm" });
     const result = JSON.parse(resp.body.toString());
 
     if (result.valid) {
@@ -168,6 +173,76 @@ const commands = {
     for (const w of result.warnings) console.log(`  \x1b[33mwarn: ${w}\x1b[0m`);
     if (result.info.runSignature) console.log(`  run: ${result.info.runSignature}`);
     if (!result.valid) process.exit(1);
+  },
+
+  async alias(args) {
+    const sub = args[0];
+    if (sub === "set") {
+      const name = args[1], hash = args[2];
+      if (!name || !hash) die("Usage: alias set <name> <hash>");
+      const resp = await request("PUT", `/alias/${name}`, { body: JSON.stringify({ hash }), contentType: "application/json" });
+      if (resp.status !== 200) die(json(resp).error);
+      console.log(`${name} -> ${hash.slice(0, 12)}`);
+    } else if (sub === "get") {
+      const name = args[1];
+      if (!name) die("Usage: alias get <name>");
+      const resp = await request("GET", `/alias/${name}`);
+      if (resp.status === 404) die(`not found: ${name}`);
+      const a = json(resp);
+      console.log(`${a.name} -> ${a.hash}`);
+    } else if (sub === "rm" || sub === "delete") {
+      const name = args[1];
+      if (!name) die("Usage: alias rm <name>");
+      const resp = await request("DELETE", `/alias/${name}`);
+      if (resp.status === 404) die(`not found: ${name}`);
+      console.log(`deleted: ${name}`);
+    } else if (sub === "ls" || sub === "list" || !sub) {
+      const resp = await request("GET", "/aliases");
+      const aliases = json(resp);
+      if (aliases.length === 0) return console.log("No aliases.");
+      for (const a of aliases) console.log(`${a.name.padEnd(24)} ${a.hash.slice(0, 12)}  ${a.updated_at.slice(0, 19)}`);
+    } else {
+      die("Usage: alias [set|get|rm|ls] ...");
+    }
+  },
+
+  async run(args) {
+    const ref = args[0];
+    if (!ref) die("Usage: run <module-ref> [input-file|-] [--input-ref <ref>] [-o output]");
+
+    const inputRefIdx = args.indexOf("--input-ref");
+    const outIdx = args.indexOf("-o");
+    const outArg = outIdx !== -1 ? args[outIdx + 1] : null;
+
+    let url = `/run/${ref}`;
+    let body = null;
+
+    if (inputRefIdx !== -1) {
+      const inputRef = args[inputRefIdx + 1];
+      if (!inputRef) die("--input-ref requires a value");
+      url += `?input=${encodeURIComponent(inputRef)}`;
+    } else {
+      const fileArg = args[1] === "-o" ? "-" : (args[1] || "-");
+      body = Buffer.from(readInput(fileArg));
+    }
+
+    const resp = await request("POST", url, { body });
+    if (resp.status !== 200) {
+      const err = JSON.parse(resp.body.toString());
+      die(err.message || err.error);
+    }
+
+    const moduleHash = resp.headers["x-module-hash"];
+    const inputHash = resp.headers["x-input-hash"];
+    const outputHash = resp.headers["x-output-hash"];
+    process.stderr.write(`run: ${resp.body.length} bytes  module=${moduleHash.slice(0, 12)}  input=${inputHash.slice(0, 12)}  output=${outputHash.slice(0, 12)}\n`);
+
+    if (outArg) {
+      fs.writeFileSync(outArg, resp.body);
+      process.stderr.write(`wrote ${outArg}\n`);
+    } else {
+      process.stdout.write(resp.body);
+    }
   },
 
   async languages() {
@@ -183,14 +258,23 @@ const usage = `Usage: compiler-api <command> [args]
 Commands:
   compile <lang> [file|-] [-o out.wasm]   Compile source to WebAssembly
   validate <file.wasm>                    Validate module against contract
-  blob <hash> [-o output]                 Fetch a stored blob
-  exists <hash>                           Check if a blob exists (HEAD)
-  events [limit]                          List recent compile events
+  run <ref> [input|-] [-o output]         Execute a module
+  run <ref> --input-ref <ref>             Execute with stored input blob
+  alias set <name> <hash>                 Create/update alias
+  alias get <name>                        Resolve alias
+  alias rm <name>                         Delete alias
+  alias ls                                List all aliases
+  blob <ref> [-o output]                  Fetch a stored blob (hash or alias)
+  exists <ref>                            Check if a blob exists (HEAD)
+  events [limit]                          List recent events
   stats                                   Show aggregate statistics
   languages                               List supported languages
 
 Environment:
-  COMPILER_API_URL   Server URL (default: http://localhost:8000)`;
+  COMPILER_API_URL   Server URL (default: http://localhost:8000)
+
+Refs:
+  A <ref> is an alias name or a SHA-256 blob hash.`;
 
 const cmd = process.argv[2];
 const args = process.argv.slice(3);
