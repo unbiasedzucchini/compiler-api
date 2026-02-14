@@ -81,19 +81,6 @@ const compilers = {
     return readFile(output);
   },
 
-  async grain(source, dir) {
-    const input = path.join(dir, "input.gr");
-    const output = path.join(dir, "input.wasm");
-    await writeFile(input, source);
-    await exec("grain", [
-      "compile",
-      "--no-gc",
-      "--elide-type-info",
-      "--release",
-      input,
-    ]);
-    return readFile(output);
-  },
 };
 
 // --- routes ---

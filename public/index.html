@@ -33,7 +33,6 @@
     <option value="assemblyscript">AssemblyScript</option>
     <option value="tinygo">TinyGo (Go)</option>
     <option value="zig">Zig</option>
-    <option value="grain">Grain</option>
   </select>
   <button id="compile" onclick="doCompile()">Compile ▶</button>
   <span id="status" class="status">Ready</span>
@@ -71,10 +70,7 @@ func main() {}
     return a + b;
 }
 `,
-  grain: `module Main
 
-provide let add = (a, b) => a + b
-`,
 };
 
 const langEl = document.getElementById('lang');
