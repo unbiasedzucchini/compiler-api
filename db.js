@@ -40,6 +40,7 @@ db.exec(`
 const stmts = {
   getBlob: db.prepare("SELECT data FROM blobs WHERE hash = ?"),
   hasBlob: db.prepare("SELECT 1 FROM blobs WHERE hash = ? LIMIT 1"),
+  blobSize: db.prepare("SELECT size FROM blobs WHERE hash = ?"),
   putBlob: db.prepare("INSERT OR IGNORE INTO blobs (hash, data, size) VALUES (?, ?, ?)"),
   insertEvent: db.prepare(`
     INSERT INTO events (language, input_hash, output_hash, output_size, compile_time_ms, success, error)
@@ -101,4 +102,9 @@ function stats() {
   return stmts.stats.get();
 }
 
-module.exports = { putBlob, getBlob, hash, recordEvent, recentEvents, stats, db };
+function blobSize(h) {
+  const row = stmts.blobSize.get(h);
+  return row ? row.size : null;
+}
+
+module.exports = { putBlob, getBlob, blobSize, hash, recordEvent, recentEvents, stats, db };

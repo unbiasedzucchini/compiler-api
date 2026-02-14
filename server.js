@@ -90,6 +90,15 @@ app.get("/languages", (_req, res) => {
   res.json(Object.keys(compilers));
 });
 
+app.head("/blob/:hash", (req, res) => {
+  const size = store.blobSize(req.params.hash);
+  if (size === null) return res.status(404).end();
+  res.set("Content-Type", "application/octet-stream");
+  res.set("Content-Length", String(size));
+  res.set("Cache-Control", "public, immutable, max-age=31536000");
+  res.status(200).end();
+});
+
 app.get("/blob/:hash", (req, res) => {
   const data = store.getBlob(req.params.hash);
   if (!data) return res.status(404).json({ error: "Not found" });
