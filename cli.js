@@ -60,7 +60,16 @@ const commands = {
 
     const inputHash = resp.headers["x-input-hash"];
     const outputHash = resp.headers["x-output-hash"];
-    process.stderr.write(`${lang}: ${resp.body.length} bytes  input=${inputHash.slice(0, 12)}  output=${outputHash.slice(0, 12)}\n`);
+    const contractOk = resp.headers["x-contract-valid"] === "true";
+    const contractErrors = resp.headers["x-contract-errors"];
+    const contractWarnings = resp.headers["x-contract-warnings"];
+    process.stderr.write(`${lang}: ${resp.body.length} bytes  input=${inputHash.slice(0, 12)}  output=${outputHash.slice(0, 12)}  contract=${contractOk ? "\x1b[32m✓\x1b[0m" : "\x1b[31m✗\x1b[0m"}\n`);
+    if (contractErrors) {
+      for (const e of JSON.parse(contractErrors)) process.stderr.write(`  \x1b[31merror: ${e}\x1b[0m\n`);
+    }
+    if (contractWarnings) {
+      for (const w of JSON.parse(contractWarnings)) process.stderr.write(`  \x1b[33mwarn: ${w}\x1b[0m\n`);
+    }
 
     if (outArg) {
       fs.writeFileSync(outArg, resp.body);
@@ -143,6 +152,24 @@ const commands = {
     console.log(`Total storage:  ${(s.total_blob_bytes / 1024).toFixed(1)} KB`);
   },
 
+  async validate(args) {
+    const fileArg = args[0];
+    if (!fileArg) die("Usage: validate <file.wasm>");
+    const wasm = fs.readFileSync(path.resolve(fileArg));
+    const resp = await request("POST", "/validate", { body: wasm });
+    const result = JSON.parse(resp.body.toString());
+
+    if (result.valid) {
+      console.log(`\x1b[32m✓ Contract satisfied\x1b[0m`);
+    } else {
+      console.log(`\x1b[31m✗ Contract violated\x1b[0m`);
+    }
+    for (const e of result.errors) console.log(`  \x1b[31merror: ${e}\x1b[0m`);
+    for (const w of result.warnings) console.log(`  \x1b[33mwarn: ${w}\x1b[0m`);
+    if (result.info.runSignature) console.log(`  run: ${result.info.runSignature}`);
+    if (!result.valid) process.exit(1);
+  },
+
   async languages() {
     const resp = await request("GET", "/languages");
     json(resp).forEach((l) => console.log(l));
@@ -155,6 +182,7 @@ const usage = `Usage: compiler-api <command> [args]
 
 Commands:
   compile <lang> [file|-] [-o out.wasm]   Compile source to WebAssembly
+  validate <file.wasm>                    Validate module against contract
   blob <hash> [-o output]                 Fetch a stored blob
   exists <hash>                           Check if a blob exists (HEAD)
   events [limit]                          List recent compile events

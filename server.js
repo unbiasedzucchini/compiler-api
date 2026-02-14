@@ -5,11 +5,12 @@ const { randomUUID } = require("crypto");
 const path = require("path");
 const os = require("os");
 const store = require("./db");
+const { validate } = require("./validate");
 
 const app = express();
 const PORT = 8000;
 
-app.use(express.text({ type: "*/*", limit: "1mb" }));
+app.use("/compile", express.text({ type: "*/*", limit: "1mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 // --- helpers ---
@@ -112,6 +113,12 @@ app.get("/events", (req, res) => {
   res.json(store.recentEvents(limit));
 });
 
+app.post("/validate", express.raw({ type: "*/*", limit: "4mb" }), (req, res) => {
+  if (!Buffer.isBuffer(req.body)) req.body = Buffer.from(req.body);
+  const result = validate(req.body);
+  res.json(result);
+});
+
 app.get("/stats", (_req, res) => {
   res.json(store.stats());
 });
@@ -137,6 +144,7 @@ app.post("/compile/:language", async (req, res) => {
     const wasm = await compiler(source, dir);
     const compileTimeMs = Date.now() - t0;
     const outputHash = store.putBlob(wasm);
+    const validation = validate(wasm);
 
     store.recordEvent({
       language: lang,
@@ -147,10 +155,17 @@ app.post("/compile/:language", async (req, res) => {
       success: true,
     });
 
-    console.log(`[${lang}] success — ${wasm.length} bytes (${compileTimeMs}ms)`);
+    console.log(`[${lang}] success — ${wasm.length} bytes (${compileTimeMs}ms) contract=${validation.valid ? 'ok' : 'FAIL'}`);
     res.set("Content-Type", "application/wasm");
     res.set("X-Input-Hash", inputHash);
     res.set("X-Output-Hash", outputHash);
+    res.set("X-Contract-Valid", validation.valid ? "true" : "false");
+    if (!validation.valid) {
+      res.set("X-Contract-Errors", JSON.stringify(validation.errors));
+    }
+    if (validation.warnings.length) {
+      res.set("X-Contract-Warnings", JSON.stringify(validation.warnings));
+    }
     res.send(wasm);
   } catch (err) {
     const compileTimeMs = Date.now() - t0;
