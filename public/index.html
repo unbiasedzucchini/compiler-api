@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebAssembly Compiler Explorer</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; background: #0d1117; color: #c9d1d9; height: 100vh; display: flex; flex-direction: column; }
+  header { padding: 12px 20px; display: flex; align-items: center; gap: 16px; border-bottom: 1px solid #21262d; background: #161b22; }
+  header h1 { font-size: 15px; font-weight: 600; color: #58a6ff; }
+  header select { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px 10px; font-family: inherit; font-size: 13px; }
+  header button { background: #238636; color: #fff; border: none; border-radius: 6px; padding: 6px 16px; font-family: inherit; font-size: 13px; cursor: pointer; font-weight: 600; }
+  header button:hover { background: #2ea043; }
+  header button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .status { margin-left: auto; font-size: 12px; color: #8b949e; }
+  .status.error { color: #f85149; }
+  .status.ok { color: #3fb950; }
+  main { flex: 1; display: flex; overflow: hidden; }
+  .pane { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .pane + .pane { border-left: 1px solid #21262d; }
+  .pane-header { padding: 8px 16px; font-size: 12px; font-weight: 600; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; background: #161b22; border-bottom: 1px solid #21262d; }
+  textarea { flex: 1; background: #0d1117; color: #c9d1d9; border: none; padding: 16px; font-family: inherit; font-size: 13px; line-height: 1.6; resize: none; outline: none; tab-size: 2; }
+  #output { flex: 1; padding: 16px; overflow: auto; font-size: 13px; line-height: 1.6; white-space: pre-wrap; background: #0d1117; }
+  #output.error-output { color: #f85149; }
+  .info-bar { padding: 6px 16px; font-size: 11px; color: #484f58; background: #161b22; border-top: 1px solid #21262d; display: flex; gap: 20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>◈ WASM Compiler Explorer</h1>
+  <select id="lang">
+    <option value="assemblyscript">AssemblyScript</option>
+    <option value="tinygo">TinyGo (Go)</option>
+    <option value="zig">Zig</option>
+    <option value="grain">Grain</option>
+  </select>
+  <button id="compile" onclick="doCompile()">Compile ▶</button>
+  <span id="status" class="status">Ready</span>
+</header>
+<main>
+  <div class="pane">
+    <div class="pane-header">Source</div>
+    <textarea id="source" spellcheck="false" autocomplete="off"></textarea>
+  </div>
+  <div class="pane">
+    <div class="pane-header">Output (WAT disassembly)</div>
+    <div id="output">Compile something to see output here.</div>
+  </div>
+</main>
+<div class="info-bar">
+  <span id="info-size"></span>
+  <span id="info-time"></span>
+</div>
+<script>
+const defaults = {
+  assemblyscript: `export function add(a: i32, b: i32): i32 {
+  return a + b;
+}
+`,
+  tinygo: `package main
+
+//export add
+func add(a, b int32) int32 {
+\treturn a + b
+}
+
+func main() {}
+`,
+  zig: `export fn add(a: i32, b: i32) i32 {
+    return a + b;
+}
+`,
+  grain: `module Main
+
+provide let add = (a, b) => a + b
+`,
+};
+
+const langEl = document.getElementById('lang');
+const sourceEl = document.getElementById('source');
+const outputEl = document.getElementById('output');
+const statusEl = document.getElementById('status');
+const compileBtn = document.getElementById('compile');
+
+// Persist and restore per-language source
+const saved = {};
+langEl.addEventListener('change', () => {
+  saved[prev] = sourceEl.value;
+  prev = langEl.value;
+  sourceEl.value = saved[langEl.value] || defaults[langEl.value] || '';
+});
+let prev = langEl.value;
+sourceEl.value = defaults[langEl.value] || '';
+
+// Keyboard shortcut
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); doCompile(); }
+});
+
+// Tab key in textarea
+sourceEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    const s = sourceEl.selectionStart, end = sourceEl.selectionEnd;
+    sourceEl.value = sourceEl.value.substring(0, s) + '  ' + sourceEl.value.substring(end);
+    sourceEl.selectionStart = sourceEl.selectionEnd = s + 2;
+  }
+});
+
+async function doCompile() {
+  const lang = langEl.value;
+  const source = sourceEl.value;
+  statusEl.className = 'status';
+  statusEl.textContent = 'Compiling…';
+  compileBtn.disabled = true;
+  outputEl.className = '';
+  outputEl.textContent = '';
+  document.getElementById('info-size').textContent = '';
+  document.getElementById('info-time').textContent = '';
+
+  const t0 = performance.now();
+  try {
+    const res = await fetch(`/compile/${lang}`, { method: 'POST', body: source });
+    const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+    document.getElementById('info-time').textContent = `Time: ${elapsed}s`;
+
+    if (!res.ok) {
+      const err = await res.json();
+      outputEl.className = 'error-output';
+      outputEl.textContent = err.stderr || err.error || 'Unknown error';
+      statusEl.className = 'status error';
+      statusEl.textContent = 'Error';
+      return;
+    }
+
+    const wasmBytes = await res.arrayBuffer();
+    document.getElementById('info-size').textContent = `Size: ${wasmBytes.byteLength} bytes`;
+
+    // Disassemble to WAT using wabt.js or show hex
+    try {
+      const wat = await disassemble(wasmBytes);
+      outputEl.textContent = wat;
+    } catch {
+      outputEl.textContent = formatHex(wasmBytes);
+    }
+
+    statusEl.className = 'status ok';
+    statusEl.textContent = `OK — ${wasmBytes.byteLength} bytes`;
+  } catch (err) {
+    outputEl.className = 'error-output';
+    outputEl.textContent = err.message;
+    statusEl.className = 'status error';
+    statusEl.textContent = 'Error';
+  } finally {
+    compileBtn.disabled = false;
+  }
+}
+
+// Use wabt.js for disassembly
+let wabtModule = null;
+async function disassemble(bytes) {
+  if (!wabtModule) {
+    // Load wabt.js from CDN
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/wabt@1.0.36/index.js';
+    document.head.appendChild(script);
+    await new Promise((res, rej) => { script.onload = res; script.onerror = rej; });
+    wabtModule = await WabtModule();
+  }
+  const module = wabtModule.readWasm(new Uint8Array(bytes), { readDebugNames: true });
+  module.applyNames();
+  const wat = module.toText({ foldExprs: false, inlineExport: true });
+  module.destroy();
+  return wat;
+}
+
+function formatHex(buffer) {
+  const arr = new Uint8Array(buffer);
+  const lines = [];
+  for (let i = 0; i < arr.length; i += 16) {
+    const hex = Array.from(arr.slice(i, i + 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+    lines.push(`${i.toString(16).padStart(8, '0')}  ${hex}`);
+  }
+  return lines.join('\n');
+}
+</script>
+</body>
+</html>
