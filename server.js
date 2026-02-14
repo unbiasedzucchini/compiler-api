@@ -43,8 +43,7 @@ const compilers = {
     await exec(ascBin, [
       input, "-o", output,
       "--optimize",
-      "--exportRuntime",
-      "--outFile", output,
+      "--runtime", "stub",
     ]);
     return readFile(output);
   },
@@ -56,8 +55,10 @@ const compilers = {
     await exec("tinygo", [
       "build",
       "-o", output,
-      "-target=wasi",
+      "-target=wasm-unknown",
       "-no-debug",
+      "-gc=leaking",
+      "-scheduler=none",
       input,
     ]);
     return readFile(output);
@@ -86,6 +87,9 @@ const compilers = {
     await writeFile(input, source);
     await exec("grain", [
       "compile",
+      "--no-gc",
+      "--elide-type-info",
+      "--release",
       input,
     ]);
     return readFile(output);
