@@ -4,6 +4,7 @@ const { writeFile, readFile, mkdir, rm } = require("fs/promises");
 const { randomUUID } = require("crypto");
 const path = require("path");
 const os = require("os");
+const store = require("./db");
 
 const app = express();
 const PORT = 8000;
@@ -89,6 +90,23 @@ app.get("/languages", (_req, res) => {
   res.json(Object.keys(compilers));
 });
 
+app.get("/blob/:hash", (req, res) => {
+  const data = store.getBlob(req.params.hash);
+  if (!data) return res.status(404).json({ error: "Not found" });
+  res.set("Content-Type", "application/octet-stream");
+  res.set("Cache-Control", "public, immutable, max-age=31536000");
+  res.send(data);
+});
+
+app.get("/events", (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 50, 500);
+  res.json(store.recentEvents(limit));
+});
+
+app.get("/stats", (_req, res) => {
+  res.json(store.stats());
+});
+
 app.post("/compile/:language", async (req, res) => {
   const lang = req.params.language;
   const compiler = compilers[lang];
@@ -101,19 +119,46 @@ app.post("/compile/:language", async (req, res) => {
     return res.status(400).json({ error: "Request body must contain source code" });
   }
 
+  const inputHash = store.putBlob(source);
+  const t0 = Date.now();
   let dir;
   try {
     dir = await tmpDir();
-    console.log(`[${lang}] compiling in ${dir}`);
+    console.log(`[${lang}] compiling ${inputHash.slice(0, 12)} in ${dir}`);
     const wasm = await compiler(source, dir);
-    console.log(`[${lang}] success — ${wasm.length} bytes`);
+    const compileTimeMs = Date.now() - t0;
+    const outputHash = store.putBlob(wasm);
+
+    store.recordEvent({
+      language: lang,
+      inputHash,
+      outputHash,
+      outputSize: wasm.length,
+      compileTimeMs,
+      success: true,
+    });
+
+    console.log(`[${lang}] success — ${wasm.length} bytes (${compileTimeMs}ms)`);
     res.set("Content-Type", "application/wasm");
+    res.set("X-Input-Hash", inputHash);
+    res.set("X-Output-Hash", outputHash);
     res.send(wasm);
   } catch (err) {
-    console.error(`[${lang}] error:`, err.message);
+    const compileTimeMs = Date.now() - t0;
+    const errorMsg = err.stderr || err.message;
+
+    store.recordEvent({
+      language: lang,
+      inputHash,
+      compileTimeMs,
+      success: false,
+      error: errorMsg,
+    });
+
+    console.error(`[${lang}] error (${compileTimeMs}ms):`, err.message);
     res.status(400).json({
       error: "Compilation failed",
-      stderr: err.stderr || err.message,
+      stderr: errorMsg,
       stdout: err.stdout || "",
     });
   } finally {
